@@ -1,6 +1,13 @@
+# ============================================================
+# TP2 + TP Data Lake
+# Pipeline PokeAPI + PostgreSQL + n8n + MinIO
+# n8n Community Edition : https://github.com/n8n-io/n8n
+# ============================================================
+
 volumes:
   db_storage:
   n8n_storage:
+  minio_storage:
 
 services:
   postgres:
@@ -11,16 +18,31 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_NON_ROOT_USER=${POSTGRES_NON_ROOT_USER}
-      - POSTGRES_NON_ROOT_PASSWORD=${POSTGRES_NON_ROOT_PASSWORD}
     volumes:
       - db_storage:/var/lib/postgresql/data
-      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/20-init-tables.sql
     ports:
       - "5432:5432"
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    container_name: tp2_minio
+    restart: unless-stopped
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_storage:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -34,10 +56,9 @@ services:
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
       - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
-      - DB_POSTGRESDB_USER=${POSTGRES_NON_ROOT_USER}
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_NON_ROOT_PASSWORD}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
       - N8N_DIAGNOSTICS_ENABLED=false
-      - N8N_PERSONALIZATION_ENABLED=false
       - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
     ports:
       - "5678:5678"
@@ -45,4 +66,6 @@ services:
       - n8n_storage:/home/node/.n8n
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy

@@ -1,6 +1,7 @@
 # Docker volumes
 postgres_data/
 n8n_data/
+minio_storage/
 
 # OS files
 .DS_Store

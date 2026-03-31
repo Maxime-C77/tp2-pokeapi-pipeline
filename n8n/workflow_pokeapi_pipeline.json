@@ -1,5 +1,5 @@
 {
-  "name": "TP2 - PokeAPI to PostgreSQL Pipeline",
+  "name": "TP Data Lake - PokeAPI to MinIO Pipeline",
   "nodes": [
     {
       "parameters": {},
@@ -12,137 +12,116 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO ingestion_runs (source, started_at, status) VALUES ('pokeapi', NOW(), 'running') RETURNING run_id;",
+        "query": "SELECT pokemon_id, pokemon_name FROM pokemon LIMIT 10;",
         "options": {}
       },
-      "id": "create-run-node",
-      "name": "Create Ingestion Run",
+      "id": "get-pokemon-node",
+      "name": "Get Pokemon from DB",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [400, 300],
       "credentials": {
         "postgres": {
           "id": "1",
-          "name": "PostgreSQL - pokemon_db"
+          "name": "Postgres account"
         }
       }
     },
     {
       "parameters": {
-        "url": "https://pokeapi.co/api/v2/pokemon?limit=150&offset=0",
+        "url": "=https://pokeapi.co/api/v2/pokemon/{{ $json.pokemon_id }}",
         "options": {}
       },
-      "id": "fetch-list-node",
-      "name": "Fetch Pokemon List",
+      "id": "fetch-json-node",
+      "name": "Fetch Pokemon JSON",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [600, 300]
     },
     {
       "parameters": {
-        "jsCode": "// Extraire les URLs individuelles depuis la liste\nconst results = $input.first().json.results;\nconst items = results.map(p => ({ json: { url: p.url, name: p.name } }));\nreturn items;"
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  const pokemonId = data.id;\n  const pokemonName = data.name;\n  const jsonContent = JSON.stringify(data);\n  \n  results.push({\n    json: {\n      pokemon_id: pokemonId,\n      pokemon_name: pokemonName,\n      file_name: `${pokemonName}.json`,\n      file_content: jsonContent,\n      file_size: jsonContent.length,\n      bucket_name: 'raw-pokemon',\n      object_key: `raw-pokemon/${pokemonName}.json`,\n      file_type: 'json',\n      mime_type: 'application/json'\n    }\n  });\n}\n\nreturn results;"
       },
-      "id": "split-urls-node",
-      "name": "Split Pokemon URLs",
+      "id": "prepare-files-node",
+      "name": "Prepare Files",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [800, 300]
     },
     {
       "parameters": {
-        "url": "={{ $json.url }}",
-        "options": {}
+        "operation": "upload",
+        "bucketName": "={{ $json.bucket_name }}",
+        "fileName": "={{ $json.file_name }}",
+        "fileContent": "={{ $json.file_content }}"
       },
-      "id": "fetch-detail-node",
-      "name": "Fetch Pokemon Detail",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1000, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Transformation des données brutes en format structuré\nconst items = $input.all();\nconst now = new Date().toISOString();\n\n// Récupérer le run_id depuis le premier noeud\n// (à adapter selon votre configuration)\nconst run_id = 1;\n\nconst transformed = items.map(item => {\n  const data = item.json;\n  \n  // Extraction du type principal (premier type)\n  const mainType = (data.types && data.types.length > 0)\n    ? data.types[0].type.name\n    : 'unknown';\n  \n  // Vérification artwork officiel\n  const hasOfficialArtwork = !!(data.sprites\n    && data.sprites.other\n    && data.sprites.other['official-artwork']\n    && data.sprites.other['official-artwork'].front_default);\n  \n  // Vérification sprite frontal\n  const hasFrontSprite = !!(data.sprites && data.sprites.front_default);\n  \n  return {\n    json: {\n      pokemon_id: data.id || 0,\n      pokemon_name: (data.name || '').toLowerCase().trim(),\n      base_experience: data.base_experience || null,\n      height: data.height || null,\n      weight: data.weight || null,\n      main_type: mainType,\n      has_official_artwork: hasOfficialArtwork,\n      has_front_sprite: hasFrontSprite,\n      source_last_updated_at: now,\n      ingested_at: now,\n      run_id: run_id\n    }\n  };\n});\n\nreturn transformed;"
-      },
-      "id": "transform-node",
-      "name": "Transform Data",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1200, 300]
-    },
-    {
-      "parameters": {
-        "operation": "insert",
-        "schema": "public",
-        "table": "pokemon",
-        "columns": "pokemon_id,pokemon_name,base_experience,height,weight,main_type,has_official_artwork,has_front_sprite,source_last_updated_at,ingested_at,run_id",
-        "options": {}
-      },
-      "id": "insert-pokemon-node",
-      "name": "Insert into Pokemon",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [1400, 300],
+      "id": "upload-minio-node",
+      "name": "Upload to MinIO",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [1000, 300],
       "credentials": {
-        "postgres": {
-          "id": "1",
-          "name": "PostgreSQL - pokemon_db"
+        "s3": {
+          "id": "2",
+          "name": "S3 account"
         }
       }
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE ingestion_runs SET finished_at = NOW(), status = 'success', records_received = {{ $json.totalReceived }}, records_inserted = {{ $json.totalInserted }} WHERE run_id = {{ $json.run_id }};",
+        "query": "INSERT INTO pokemon_files (pokemon_id, bucket_name, object_key, file_name, file_type, file_size_bytes, mime_type, internal_url, created_at)\nVALUES ({{ $('Prepare Files').item.json.pokemon_id }}, '{{ $('Prepare Files').item.json.bucket_name }}', '{{ $('Prepare Files').item.json.object_key }}', '{{ $('Prepare Files').item.json.file_name }}', '{{ $('Prepare Files').item.json.file_type }}', {{ $('Prepare Files').item.json.file_size }}, '{{ $('Prepare Files').item.json.mime_type }}', 'http://minio:9000/{{ $('Prepare Files').item.json.object_key }}', NOW());",
         "options": {}
       },
-      "id": "update-run-node",
-      "name": "Update Ingestion Run",
+      "id": "insert-files-node",
+      "name": "Insert pokemon_files",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1600, 300],
+      "position": [1200, 300],
       "credentials": {
         "postgres": {
           "id": "1",
-          "name": "PostgreSQL - pokemon_db"
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO file_ingestion_log (file_name, bucket_name, object_key, processed_at, source, status)\nVALUES ('{{ $('Prepare Files').first().json.file_name }}', '{{ $('Prepare Files').first().json.bucket_name }}', '{{ $('Prepare Files').first().json.object_key }}', NOW(), 'pokeapi', 'success');",
+        "options": {}
+      },
+      "id": "log-ingestion-node",
+      "name": "Log Ingestion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1400, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Postgres account"
         }
       }
     }
   ],
   "connections": {
     "Manual Trigger": {
-      "main": [
-        [{ "node": "Create Ingestion Run", "type": "main", "index": 0 }]
-      ]
+      "main": [[{ "node": "Get Pokemon from DB", "type": "main", "index": 0 }]]
     },
-    "Create Ingestion Run": {
-      "main": [
-        [{ "node": "Fetch Pokemon List", "type": "main", "index": 0 }]
-      ]
+    "Get Pokemon from DB": {
+      "main": [[{ "node": "Fetch Pokemon JSON", "type": "main", "index": 0 }]]
     },
-    "Fetch Pokemon List": {
-      "main": [
-        [{ "node": "Split Pokemon URLs", "type": "main", "index": 0 }]
-      ]
+    "Fetch Pokemon JSON": {
+      "main": [[{ "node": "Prepare Files", "type": "main", "index": 0 }]]
     },
-    "Split Pokemon URLs": {
-      "main": [
-        [{ "node": "Fetch Pokemon Detail", "type": "main", "index": 0 }]
-      ]
+    "Prepare Files": {
+      "main": [[{ "node": "Upload to MinIO", "type": "main", "index": 0 }]]
     },
-    "Fetch Pokemon Detail": {
-      "main": [
-        [{ "node": "Transform Data", "type": "main", "index": 0 }]
-      ]
+    "Upload to MinIO": {
+      "main": [[{ "node": "Insert pokemon_files", "type": "main", "index": 0 }]]
     },
-    "Transform Data": {
-      "main": [
-        [{ "node": "Insert into Pokemon", "type": "main", "index": 0 }]
-      ]
-    },
-    "Insert into Pokemon": {
-      "main": [
-        [{ "node": "Update Ingestion Run", "type": "main", "index": 0 }]
-      ]
+    "Insert pokemon_files": {
+      "main": [[{ "node": "Log Ingestion", "type": "main", "index": 0 }]]
     }
   },
   "settings": {
