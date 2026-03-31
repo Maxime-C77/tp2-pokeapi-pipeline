@@ -1,0 +1,151 @@
+{
+  "name": "TP2 - PokeAPI to PostgreSQL Pipeline",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ingestion_runs (source, started_at, status) VALUES ('pokeapi', NOW(), 'running') RETURNING run_id;",
+        "options": {}
+      },
+      "id": "create-run-node",
+      "name": "Create Ingestion Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [400, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL - pokemon_db"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://pokeapi.co/api/v2/pokemon?limit=150&offset=0",
+        "options": {}
+      },
+      "id": "fetch-list-node",
+      "name": "Fetch Pokemon List",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraire les URLs individuelles depuis la liste\nconst results = $input.first().json.results;\nconst items = results.map(p => ({ json: { url: p.url, name: p.name } }));\nreturn items;"
+      },
+      "id": "split-urls-node",
+      "name": "Split Pokemon URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {}
+      },
+      "id": "fetch-detail-node",
+      "name": "Fetch Pokemon Detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transformation des données brutes en format structuré\nconst items = $input.all();\nconst now = new Date().toISOString();\n\n// Récupérer le run_id depuis le premier noeud\n// (à adapter selon votre configuration)\nconst run_id = 1;\n\nconst transformed = items.map(item => {\n  const data = item.json;\n  \n  // Extraction du type principal (premier type)\n  const mainType = (data.types && data.types.length > 0)\n    ? data.types[0].type.name\n    : 'unknown';\n  \n  // Vérification artwork officiel\n  const hasOfficialArtwork = !!(data.sprites\n    && data.sprites.other\n    && data.sprites.other['official-artwork']\n    && data.sprites.other['official-artwork'].front_default);\n  \n  // Vérification sprite frontal\n  const hasFrontSprite = !!(data.sprites && data.sprites.front_default);\n  \n  return {\n    json: {\n      pokemon_id: data.id || 0,\n      pokemon_name: (data.name || '').toLowerCase().trim(),\n      base_experience: data.base_experience || null,\n      height: data.height || null,\n      weight: data.weight || null,\n      main_type: mainType,\n      has_official_artwork: hasOfficialArtwork,\n      has_front_sprite: hasFrontSprite,\n      source_last_updated_at: now,\n      ingested_at: now,\n      run_id: run_id\n    }\n  };\n});\n\nreturn transformed;"
+      },
+      "id": "transform-node",
+      "name": "Transform Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "public",
+        "table": "pokemon",
+        "columns": "pokemon_id,pokemon_name,base_experience,height,weight,main_type,has_official_artwork,has_front_sprite,source_last_updated_at,ingested_at,run_id",
+        "options": {}
+      },
+      "id": "insert-pokemon-node",
+      "name": "Insert into Pokemon",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1400, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL - pokemon_db"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE ingestion_runs SET finished_at = NOW(), status = 'success', records_received = {{ $json.totalReceived }}, records_inserted = {{ $json.totalInserted }} WHERE run_id = {{ $json.run_id }};",
+        "options": {}
+      },
+      "id": "update-run-node",
+      "name": "Update Ingestion Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1600, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL - pokemon_db"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [{ "node": "Create Ingestion Run", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Ingestion Run": {
+      "main": [
+        [{ "node": "Fetch Pokemon List", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Pokemon List": {
+      "main": [
+        [{ "node": "Split Pokemon URLs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Split Pokemon URLs": {
+      "main": [
+        [{ "node": "Fetch Pokemon Detail", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Pokemon Detail": {
+      "main": [
+        [{ "node": "Transform Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Transform Data": {
+      "main": [
+        [{ "node": "Insert into Pokemon", "type": "main", "index": 0 }]
+      ]
+    },
+    "Insert into Pokemon": {
+      "main": [
+        [{ "node": "Update Ingestion Run", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
