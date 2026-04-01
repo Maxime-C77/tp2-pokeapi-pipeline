@@ -60,6 +60,7 @@ services:
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
       - N8N_DIAGNOSTICS_ENABLED=false
       - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      - N8N_TUNNEL_ENABLED=true
     ports:
       - "5678:5678"
     volumes:
